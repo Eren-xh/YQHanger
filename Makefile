@@ -148,12 +148,14 @@ modules/referee/referee_task.c \
 modules/referee/referee_custom.c \
 modules/referee/referee_vt.c \
 modules/referee/referee_vt_task.c \
+modules/refree_27/rm_referee27.c \
 modules/remote/remote_control.c \
 modules/super_cap/super_cap.c \
 modules/can_comm/can_comm.c \
 modules/message_center/message_center.c \
 modules/daemon/daemon.c \
 modules/alarm/buzzer.c \
+modules/hangar_bridge/hangar_bridge.c \
 application/gimbal/gimbal.c \
 application/chassis/chassis.c \
 application/shoot/shoot.c \
@@ -263,6 +265,8 @@ C_INCLUDES =  \
 -Imodules/motor \
 -Imodules/oled \
 -Imodules/referee \
+-Imodules/refree_27 \
+-Imodules/hangar_bridge \
 -Imodules/remote \
 -Imodules/super_cap \
 -Imodules/can_comm \

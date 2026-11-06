@@ -2,6 +2,8 @@
 #include "robot.h"
 #include "robot_def.h"
 #include "robot_task.h"
+#include "hangar_bridge.h"
+#include "usart.h"
 
 // 编译warning,提醒开发者修改机器人参数
 #ifndef ROBOT_DEF_PARAM_WARNING
@@ -28,6 +30,11 @@ void RobotInit()
     __disable_irq();
     
     BSPInit();
+
+    /* C 板串口1接电脑端裁判系统模拟器，串口6经蓝牙透明转发给
+     * LicheeRV nano。初始化顺序必须早于 ChassisInit，避免旧裁判模块抢占串口。 */
+    if (!HangarBridgeInit(&huart1, &huart6))
+        LOGERROR("[robot] hangar bridge init failed");
 
 #if defined(ONE_BOARD) || defined(GIMBAL_BOARD)
     RobotCMDInit();
@@ -56,5 +63,7 @@ void RobotTask()
 #if defined(ONE_BOARD) || defined(CHASSIS_BOARD)
     ChassisTask();
 #endif
+
+    HangarBridgeTask();
 
 }

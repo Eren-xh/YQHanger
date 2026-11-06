@@ -3,7 +3,7 @@
  * @brief 裁判系统 2027 协议通信模块对外接口
  *
  * @note 与旧模块 modules/referee 的区别:
- *       1. 支持多链路: 常规链路(电源管理模块 User 串口 115200) /
+ *       1. 支持多链路: 常规链路(机库裁判模拟器 USART1, 115200) /
  *          图传链路(图传发送端串口 921600) / 雷达链路(雷达接收机, 单向),
  *          每个链路一个 R27Link 实例, 解析时按链路过滤命令码, 互不干扰;
  *       2. 0x0301 交互数据支持变长接收(旧实现固定拷贝 11 字节, 会把 118 字节的包截断);
@@ -43,6 +43,11 @@ typedef enum
 #define R27_COMMON_RX_BUFFER_SIZE 255u
 #define R27_VIDEO_RX_BUFFER_SIZE 128u
 #define R27_RADAR_RX_BUFFER_SIZE 128u
+
+/* 常规链路当前协议最大完整帧为 0x0301(127 字节)。解析完成的帧先进入
+ * 无锁环形队列，再由应用任务转发，避免在 DMA/IDLE 回调中做串口发送。 */
+#define R27_RX_FRAME_MAX_LENGTH (R27_LEN_HEADER + R27_LEN_CMDID + R27_LEN_robot_interaction + R27_LEN_TAIL)
+#define R27_RX_FRAME_QUEUE_DEPTH 8u
 
 /* ============================== 运行时数据 ============================== */
 
@@ -114,8 +119,19 @@ typedef struct
     uint32_t rx_unknown_cnt;       /* 不属于本链路的帧数 */
     uint32_t rx_len_mismatch_cnt;  /* 数据段长度与手册不符的帧数(排查协议版本用) */
     uint16_t last_data_length;  /* 最近一帧的数据段长度 */
+    uint32_t rx_queue_overflow_cnt; /* 应用任务未及时取走的完整帧数 */
     uint8_t init_flag;          /* 已初始化(收到过数据)标志 */
 } r27_referee_info_t;
+
+/* 解析器交给上层应用的完整帧。frame 内容包含 SOF、帧头、命令码、data 和 CRC16。 */
+typedef struct
+{
+    uint16_t length;
+    uint16_t cmd_id;
+    uint16_t data_length;
+    uint8_t seq;
+    uint8_t frame[R27_RX_FRAME_MAX_LENGTH];
+} R27ReceivedFrame;
 
 /* 雷达链路(0x0A01~0x0A06) 接收数据 */
 typedef struct
@@ -145,6 +161,10 @@ typedef struct r27_link
 
     r27_referee_info_t info; /* 常规/图传链路数据 */
     r27_radar_link_info_t radar;  /* 雷达链路数据 */
+
+    volatile uint8_t rx_queue_head;
+    volatile uint8_t rx_queue_tail;
+    R27ReceivedFrame rx_queue[R27_RX_FRAME_QUEUE_DEPTH];
 } R27Link;
 
 /* ===================== UI 绘制所需的非裁判系统数据 ===================== */
@@ -187,7 +207,7 @@ typedef struct
  * @brief 初始化一条裁判系统链路(注册串口 + 守护进程 + 开启 DMA 接收)
  *
  * @param type   链路类型, 见 R27LinkType_e
- * @param handle 该链路对应的串口句柄(常规: C 板通常为 USART6)
+ * @param handle 该链路对应的串口句柄(本机库桥接常规链路使用 USART1)
  * @return R27Link* 链路实例指针, 失败返回 NULL
  * @note 同一条链路重复调用会直接返回已注册的实例
  */
@@ -230,6 +250,19 @@ void R27RefereeSend(R27Link *link, uint8_t *buf, uint16_t len);
  * @note 用于 0x0301 交互数据(UI/多机通信), 避免占用过多带宽
  */
 void R27RefereeSendThrottled(R27Link *link, uint8_t *buf, uint16_t len);
+
+/**
+ * @brief 取出一条已经通过 CRC 且完成命令码解析的完整帧
+ * @note 只能在任务上下文调用；返回 1 表示成功取到一帧。
+ */
+uint8_t R27RefereePopFrame(R27Link *link, R27ReceivedFrame *frame);
+
+/**
+ * @brief 按 2027 协议封装一帧并计算官方 CRC8/CRC16
+ * @return 完整帧长度；容量不足或参数无效返回 0。
+ */
+uint16_t R27BuildFrame(uint16_t cmd_id, const uint8_t *data, uint16_t data_len,
+                       uint8_t seq, uint8_t *out, uint16_t out_capacity);
 
 /* ============================== 工具函数 ============================== */
 

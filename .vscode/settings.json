@@ -13,5 +13,11 @@
         "can_comm.h": "c",
         "dji_motor.h": "c",
         "bsp_log.h": "c"
-    }
+    },
+    "memory-view.trackDebuggers": [
+        "ozone"
+    ],
+    "mcu-debug.rtos-views.trackDebuggers": [
+        "ozone"
+    ]
 }

@@ -16,11 +16,10 @@
 #include "power_control.h"
 #include "super_cap.h"
 #include "message_center.h"
-#include "referee_task.h"
+#include "rm_referee27.h"
 
 #include "general_def.h"
 #include "bsp_dwt.h"
-#include "referee_UI.h"
 #include "arm_math.h"
 
 /* 根据robot_def.h中的macro自动计算的参数 */
@@ -43,8 +42,7 @@ static Chassis_Ctrl_Cmd_s chassis_cmd_recv;         // 底盘接收到的控制�
 static Chassis_Upload_Data_s chassis_feedback_data; // 底盘回传的反馈数据
 
 static PIDInstance buffer_PID;             // 用于底盘的缓冲能量PID
-static referee_info_t *referee_data;       // 用于获取裁判系统的数据
-static Referee_Interactive_info_t ui_data; // UI数据，将底盘中的数据传入此结构体的对应变量中，UI会自动检测是否变化，对应显示UI
+static r27_referee_info_t *referee_data;   // 2027 裁判系统数据
 
 static SuperCapInstance *cap;                                       // 超级电容
 static DJIMotorInstance *motor_lf, *motor_rf, *motor_lb, *motor_rb; // left right forward back
@@ -98,7 +96,7 @@ void ChassisInit()
     chassis_motor_config.controller_setting_init_config.motor_reverse_flag = MOTOR_DIRECTION_NORMAL;
     motor_rb = PowerControlInit(&chassis_motor_config);
 
-    referee_data = UITaskInit(&huart6, &ui_data); // 裁判系统初始化,会同时初始化UI
+    referee_data = R27RefereeGetInfo(R27_LINK_COMMON); // 裁判链路由 HangarBridgeInit 初始化
 
 /* Buffer环暂未测试，逻辑是计算期望buffer与实际buffer的差值，转换为冗余的功率，todo：输入给功率控制部分，待完善 */
     PID_Init_Config_s Buffer_pid_conf = {
@@ -197,7 +195,10 @@ void ChassisTask()
     chassis_cmd_recv = *(Chassis_Ctrl_Cmd_s *)CANCommGet(chasiss_can_comm);
 #endif // CHASSIS_BOARD
 
-    SetPowerLimit(referee_data->GameRobotState.chassis_power_limit);//设置功率限制
+    if (referee_data != NULL && referee_data->RobotStatus.chassis_power_limit > 0)
+        SetPowerLimit((float)referee_data->RobotStatus.chassis_power_limit);
+    else
+        SetPowerLimit(80.0f); /* 首帧 0x0201 到达前使用安全默认值。 */
     if (chassis_cmd_recv.chassis_mode == CHASSIS_ZERO_FORCE)
     { // 如果出现重要模块离线或遥控器设置为急停,让电机停止
         DJIMotorStop(motor_lf);

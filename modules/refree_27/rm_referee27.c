@@ -21,6 +21,32 @@ static void R27RxCallbackCommon(void);
 static void R27RxCallbackVideo(void);
 static void R27RxCallbackRadar(void);
 
+static void R27QueueFrame(R27Link *link, uint8_t *frame, uint16_t frame_len, uint16_t data_len)
+{
+    uint8_t head;
+    uint8_t next;
+    R27ReceivedFrame *slot;
+
+    if (link == NULL || frame == NULL || frame_len > R27_RX_FRAME_MAX_LENGTH)
+        return;
+
+    head = link->rx_queue_head;
+    next = (uint8_t)((head + 1u) % R27_RX_FRAME_QUEUE_DEPTH);
+    if (next == link->rx_queue_tail)
+    {
+        link->info.rx_queue_overflow_cnt++;
+        return;
+    }
+
+    slot = &link->rx_queue[head];
+    slot->length = frame_len;
+    slot->cmd_id = (uint16_t)(frame[R27_CMD_ID_OFFSET] | ((uint16_t)frame[R27_CMD_ID_OFFSET + 1u] << 8));
+    slot->data_length = data_len;
+    slot->seq = frame[R27_SEQ];
+    memcpy(slot->frame, frame, frame_len);
+    link->rx_queue_head = next;
+}
+
 /* bsp_usart 的回调无参数, 因此为每种链路准备一个入口, 内部再转发到统一的处理函数 */
 static const usart_module_callback s_rx_callbacks[R27_LINK_TYPE_CNT] = {
     R27RxCallbackCommon,
@@ -162,6 +188,10 @@ static void R27Dispatch(R27Link *link, uint8_t *frame, uint16_t data_len)
         info->rx_unknown_cnt++;
         return;
     }
+
+    R27QueueFrame(link, frame,
+                  (uint16_t)(R27_LEN_HEADER + R27_LEN_CMDID + data_len + R27_LEN_TAIL),
+                  data_len);
 
     switch (info->CmdID)
     {
@@ -397,7 +427,8 @@ R27Link *R27RefereeInit(R27LinkType_e type, UART_HandleTypeDef *handle)
     Daemon_Init_Config_s daemon_conf = {
         .callback = R27LostCallback,
         .owner_id = link,
-        .reload_count = 30, /* 100Hz 递减, 0.3s 未收到数据判定掉线 */
+        .reload_count = (type == R27_LINK_COMMON) ? 250 : 30,
+        /* 100Hz 递减: 常规链路包含 1Hz 的 0x0001, 允许约 2.5s 间隔。 */
     };
     link->daemon = DaemonRegister(&daemon_conf);
 
@@ -466,4 +497,44 @@ void R27RefereeSendThrottled(R27Link *link, uint8_t *buf, uint16_t len)
 {
     R27RefereeSend(link, buf, len);
     osDelay(R27_TX_MIN_INTERVAL_MS);
+}
+
+uint8_t R27RefereePopFrame(R27Link *link, R27ReceivedFrame *frame)
+{
+    uint8_t tail;
+
+    if (link == NULL || frame == NULL)
+        return 0;
+
+    tail = link->rx_queue_tail;
+    if (tail == link->rx_queue_head)
+        return 0;
+
+    memcpy(frame, &link->rx_queue[tail], sizeof(R27ReceivedFrame));
+    link->rx_queue_tail = (uint8_t)((tail + 1u) % R27_RX_FRAME_QUEUE_DEPTH);
+    return 1;
+}
+
+uint16_t R27BuildFrame(uint16_t cmd_id, const uint8_t *data, uint16_t data_len,
+                       uint8_t seq, uint8_t *out, uint16_t out_capacity)
+{
+    uint32_t total_len;
+
+    if (out == NULL || data == NULL || data_len == 0)
+        return 0;
+
+    total_len = (uint32_t)R27_LEN_HEADER + R27_LEN_CMDID + data_len + R27_LEN_TAIL;
+    if (total_len > out_capacity || total_len > UINT16_MAX)
+        return 0;
+
+    out[R27_SOF] = R27_REFEREE_SOF;
+    out[R27_DATA_LENGTH] = (uint8_t)(data_len & 0xFFu);
+    out[R27_DATA_LENGTH + 1u] = (uint8_t)(data_len >> 8);
+    out[R27_SEQ] = seq;
+    Append_CRC8_Check_Sum(out, R27_LEN_HEADER);
+    out[R27_CMD_ID_OFFSET] = (uint8_t)(cmd_id & 0xFFu);
+    out[R27_CMD_ID_OFFSET + 1u] = (uint8_t)(cmd_id >> 8);
+    memcpy(out + R27_DATA_OFFSET, data, data_len);
+    Append_CRC16_Check_Sum(out, total_len);
+    return (uint16_t)total_len;
 }
